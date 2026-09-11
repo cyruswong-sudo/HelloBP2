@@ -1,0 +1,11 @@
+{
+  "name": "hellobp-marketplace",
+  "owner": { "name": "cyruswong-sudo" },
+  "plugins": [
+    {
+      "name": "hellobp2",
+      "source": ".",
+      "description": "BytePlus CDN, WAF and DNS via a signed CLI, plus Cloudflare migration."
+    }
+  ]
+}

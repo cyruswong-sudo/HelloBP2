@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+env/
+venv/
+
+# Credentials — never commit these
+bpctl.json
+config.json
+.byteplus/
+
+# Account-specific probe results
+# (these live in ~/.byteplus/, outside the repo — this is belt-and-braces)
+verified.json
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Tooling
+.pytest_cache/
+.idea/
+.vscode/
+*.swp
+*.swo

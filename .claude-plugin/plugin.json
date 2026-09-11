@@ -1,0 +1,7 @@
+{
+  "name": "hellobp2",
+  "version": "2.1.0",
+  "description": "Work with BytePlus CDN, WAF, DNS and certificates through their OpenAPIs, and migrate workloads from Cloudflare to BytePlus.",
+  "author": { "name": "cyruswong-sudo" },
+  "keywords": ["byteplus", "cdn", "waf", "dns", "cloudflare", "migration"]
+}
