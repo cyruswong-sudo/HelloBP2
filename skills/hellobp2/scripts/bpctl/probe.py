@@ -168,7 +168,9 @@ def probe_waf_parameters(credentials, host: str, *, timeout: int = 20) -> dict:
             continue
 
         result = response.body.get("Result") or {}
-        rules = result.get("Data") or result.get("data") or []
+        # The official response model puts rules under Result.Rules. Data is
+        # kept as a fallback in case a region's gateway wraps it differently.
+        rules = result.get("Rules") or result.get("Data") or result.get("data") or []
         findings.setdefault("accepted", []).append(acl_type)
         if rules:
             sample = rules[0]
@@ -194,17 +196,17 @@ def probe_waf_parameters(credentials, host: str, *, timeout: int = 20) -> dict:
             findings["observed"] = {"AclType": sorted(accepted)}
             findings["source"] = "ListAclRule parameter validation"
             findings["note"] = (
-                f"No existing ACL rules, so HostAddType and IpAddType could not be "
-                f"observed — create one rule in the BytePlus console and re-run "
-                f"`bpctl probe waf --params` for those. AclType needed no rule: "
-                f"ListAclRule validates it, accepting {sorted(accepted)} and "
-                f"rejecting {sorted(rejected)}."
+                f"No existing ACL rules to read back. AclType needed none: ListAclRule "
+                f"validates it, accepting {sorted(accepted)} and rejecting "
+                f"{sorted(rejected)}. HostAddType and IpAddType are taken from BytePlus's "
+                f"official Terraform provider documentation; create one rule and re-run "
+                f"`bpctl probe waf --params` to confirm them against this account."
             )
         else:
             findings["note"] = (
-                "No existing ACL rules found, so the enum shapes could not be observed. "
-                "Create one rule by hand in the BytePlus console, then re-run "
-                "`bpctl probe waf --params` to capture the exact field values."
+                "No existing ACL rules found to read back. HostAddType and IpAddType are "
+                "taken from BytePlus's official Terraform provider documentation; create "
+                "one rule and re-run `bpctl probe waf --params` to confirm them."
             )
     return findings
 

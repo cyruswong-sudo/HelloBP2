@@ -203,15 +203,19 @@ KNOWN_DISCREPANCIES: list[Discrepancy] = [
     ),
     Discrepancy(
         topic="waf.CreateAclRule.HostAddType",
-        documented="2 = domain group, 3 = multiple domain names",
+        documented="3 = a list of domain names, sent in HostList",
         v1_used="1",
         how_to_settle="Read back an existing rule via ListAclRule; the returned HostAddType is authoritative.",
+        # BytePlus's official Terraform provider: "host_list — Required if HostAddType = 3".
+        resolved="3 (HostList) — per BytePlus's official Terraform provider docs",
     ),
     Discrepancy(
         topic="waf.CreateAclRule.IpAddType",
-        documented="2 = IP group, 3 = manual list, 4 = geographic",
+        documented="2 = IP groups (IpGroupId), 3 = manual list (IpList)",
         v1_used="1 = manual, 2 = group",
         how_to_settle="Read back an existing rule via ListAclRule; the returned IpAddType is authoritative.",
+        # Terraform: "ip_group_id — Required if IpAddType = 2", "ip_list — Required if IpAddType = 3".
+        resolved="2 (IpGroupId) or 3 (IpList) — per BytePlus's official Terraform provider docs",
     ),
 ]
 

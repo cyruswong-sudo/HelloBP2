@@ -17,50 +17,97 @@ account has 12 is the easiest wrong answer to give confidently, and it silently
 scopes down anything built from that list — a cert deployment, a migration
 inventory, a bulk config change.
 
+> **Payload shapes below were checked against BytePlus's official SDK model**
+> (`byteplus-sdk-golang/service/cdn/model.go`), its example payloads, and the
+> official Terraform provider. HelloBP v1 got several of them wrong; where it
+> did, the correction is called out.
+
 **Configuration lives in policies, not on domains.** A domain gets its behaviour
 from an attached *service template* (delivery policy) and optionally a *cipher
-template* (encryption policy). The flow is create → release → attach:
+template* (encryption policy):
 
 ```
-CreateServiceTemplate  →  ReleaseTemplate  →  AddTemplateDomain
-CreateCipherTemplate   →  LockTemplate     →  AddCipherDomain
+CreateServiceTemplate → LockTemplate → AddTemplateDomain       (one Domain per call)
+CreateCipherTemplate  → LockTemplate → UpdateTemplateDomain    (Domains[], CertId, CipherTemplateId, HTTPSSwitch: on)
 ```
 
-**Released policies are immutable.** To change one: `DuplicateTemplate`, edit the
-copy, release it, re-attach the domains. There is no in-place edit. Plan for this
-— it means "change one cache TTL" is a four-call operation.
+`LockTemplate` is what the official Terraform provider uses to publish both kinds.
+`ReleaseTemplate` also exists (v1 used it); fall back to it only if binding a
+locked template is refused. There is no `AddCipherDomain` action.
 
-**A domain must have HTTPS enabled before a cipher template can attach.** The
-error if you skip it does not say so.
+**Locked policies are immutable.** To change one: `DuplicateTemplate`, edit the
+copy, lock it, re-attach the domains. There is no in-place edit — "change one
+cache TTL" is a four-call operation.
 
-**Omit `OriginHost` to get "Same as Domain Name".** Sending `""` is a different
-setting and is not equivalent. This applies both in `CreateServiceTemplate` and
-inside `OriginLines[]`.
+**The encryption policy binds together with a certificate.** Official examples
+send `CipherTemplateId` alongside `CertId` and `HTTPSSwitch: "on"`. Add domains
+with HTTPS off, then bind both at certificate time.
 
-> **Reads and writes are asymmetric here, which is the trap.** A domain set to
-> "Same as Domain Name" comes *back* from `DescribeCdnConfig` as
-> `"OriginHost": ""` — verified against a live domain. So round-tripping a
-> config (read it, edit one field, write it back) silently changes this setting,
-> because the `""` you read is not the `""` you may send. **Strip `OriginHost`
-> from any payload you built from a `Describe` response**, unless you are
-> deliberately setting a real origin host.
+**`AddTemplateDomain.Domain` is one domain; `UpdateTemplateDomain.Domains` is an
+array.** Different actions, different field names. v1 sent a comma-joined list
+to `AddTemplateDomain`.
+
+**Encryption policy fields nest inside `HTTPS`:**
+
+```json
+{"HTTPS": {"HTTP2": true, "OCSP": true, "TlsVersion": ["tlsv1.2", "tlsv1.3"],
+           "ForcedRedirect": {"EnableForcedRedirect": true, "StatusCode": "301"},
+           "Hsts": {"Switch": true, "Ttl": 31536000, "Subdomain": "include"}},
+ "Quic": {"Switch": false}}
+```
+
+`HTTP2` and `OCSP` are booleans, `TlsVersion` values are lowercase. v1 sent a
+flat shape — `HTTP2.Switch`, `TLSVersions`, `ForceRedirect`, `HSTS.Age`,
+`OCSPStapling` — none of which are fields.
+
+**`HttpForcedRedirect` is the opposite of what it sounds like.** It redirects
+**HTTPS → HTTP**. "Always use HTTPS" is `HTTPS.ForcedRedirect`.
 
 **HTTP/2 and WebSocket are mutually exclusive.** WebSocket needs an HTTP/1.1
-Upgrade; HTTP/2 multiplexing breaks it. Set `HTTP2.Switch: "off"` whenever
+Upgrade; HTTP/2 multiplexing breaks it. Set `HTTPS.HTTP2: false` whenever
 WebSocket is on, or connections fail in a way that looks like an origin problem.
 
-**Access rules must not carry `Switch`.** On `IpAccessRule`, `UaAccessRule`, and
-`RefererAccessRule`, including `Switch` with *any* value returns:
+**`OriginHost`: leave it out, or send `""`.** Both give "Same as Domain Name" —
+BytePlus's own SDK examples send `""`, and `DescribeCdnConfig` returns `""` for
+it, so a config read back and resent is safe. Any non-empty value fixes the
+origin hostname.
+
+**Access rules need `Switch`, `RuleType` and a list:**
+
+| Block | List field | `RuleType` |
+|---|---|---|
+| `IpAccessRule` | `Ip` | `deny` or `allow` |
+| `UaAccessRule` | `UserAgent` (+ `IgnoreCase`, `AllowEmpty`) | `deny` or `allow` |
+| `RefererAccessRule` | `Referers` (+ `AllowEmpty`) | `deny` or `allow` |
+
+```json
+{"IpAccessRule": {"Switch": true, "RuleType": "deny", "Ip": ["192.0.2.1", "198.51.100.0/24"]}}
+```
+
+This error:
 
 ```
 InvalidParameter.IpAccessRule.RuleType: Unsupported IP Access Rule type
 ```
 
-The message blames `RuleType`; the actual cause is the presence of `Switch`. Send
-only `FilterType` (`blacklist` or `whitelist`) and `Filters`.
+means the `RuleType` **value** is wrong — `blacklist` or `whitelist` instead of
+`deny` or `allow`. HelloBP v1 hit it, then renamed the fields to `FilterType` /
+`Filters` and dropped `Switch`. Those fields don't exist, so the API accepted the
+request and applied **no rule** — a silent failure. After writing any access
+rule, confirm it with `DescribeCdnConfig`.
 
-**Use `FilterType`, not `RuleType`.** `RuleType` is not a field on these objects
-despite what the error above implies.
+`AllowEmpty` decides whether a request with no header counts as matching the
+list. On a `deny` list, `true` blocks every request without a Referer.
+
+**Redirects are `RedirectionRewrite`, not `UrlRedirect`.** `UrlRedirect` isn't a
+field. Each `RedirectionAction` matches an **exact** `SourcePath` and sets
+`TargetProtocol` (`followclient` / `http` / `https`), `TargetHost`, `TargetPath`
+and `RedirectCode` (a string). No wildcards — prefix and pattern redirects belong
+in the Rules Engine.
+
+**`OriginRewrite` is an object, not a list:**
+`{"Switch": true, "OriginRewriteRule": [{"OriginRewriteAction": {"RewriteType": "rewrite_path", "SourcePath": "^/api/(.*)$", "TargetPath": "/v2/$1"}}]}`.
+`SourcePath` is a regex; `TargetPath` uses `$1`, `$2`.
 
 **`AreaAccessRule` uses BytePlus region codes, not ISO country codes.** Fetch the
 valid codes rather than assuming `US`/`GB` work everywhere.
@@ -93,60 +140,50 @@ caps at 50 domains per call. Batch client-side.
 ## WAF
 
 **Authenticating against WAF does not mean the account has WAF.** Provisioning
-and signing are unrelated: an account with CDN domains and certificates but no
-WAF deployment still returns `✓ waf ... authenticated` from `bpctl probe`. Check
-before doing any WAF work:
+and signing are unrelated: an account with no WAF deployment still returns
+`✓ waf ... authenticated` from `bpctl probe`. Check before doing any WAF work:
 
 ```bash
-bpctl call waf ListDomain
+bpctl call waf ListDomain -p Page=1 -p PageSize=100 -p Region=<waf region>
 ```
 
-`"Data": null` on a 200 means **no domains are onboarded to WAF** — there is
-nothing to attach a rule to, and `CreateAclRule` will fail no matter how correct
-the payload is. A corroborating signal: on such an account most management
-actions do not exist at all — `ListInstance`, `DescribeInstance`,
-`ListWafDomain`, `GetInstanceStatus` and `DescribeInstanceSpec` all return
-`404 InvalidActionOrVersion`, leaving only `ListDomain` and `ListAclRule`.
+**`Page`, `PageSize` and `Region` are all required** (`Page`, not `PageNum`).
+`Region` is the WAF instance's region from the BytePlus WAF console. A call
+missing them can return a 200 with `"Data": null` whatever the account has — an
+earlier version of this skill drew "WAF isn't enabled" from exactly that, which
+was not a sound conclusion.
 
-When you see this, **say so and stop.** Tell the user WAF is not enabled on this
-account and that the WAF portion of their work cannot proceed here. Do not retry
-with different payloads, do not guess at enum values to make an error go away,
-and never present a dry run as though the rule were created. If the WAF half of
-a Cloudflare migration matters, it has to run against the account that actually
-holds the WAF deployment.
+With all three set, an empty `Data` means no domains are onboarded to WAF in that
+region, so `CreateAclRule` has nothing to attach to. **Say so and stop.** Confirm
+the region with the user, don't retry with different payloads, don't guess enum
+values, and never present a dry run as a created rule.
 
 **Two hosts exist.** The docs specify `waf.byteplusapi.com`; HelloBP v1 used
 `open.byteplusapi.com` successfully. Both resolve. Run `bpctl probe waf --save`
 to determine which one your account signs for, rather than assuming.
 
-**Four enum shapes are disputed between the docs and v1's working code.** Do not
-trust either source — read them back from the account with
-`bpctl probe waf --params`, which inspects real rules via `ListAclRule`:
+**The `CreateAclRule` enums are settled.**
 
-| Field | Docs | v1 used | Status |
-|---|---|---|---|
-| `AclType` | `Allow` / `Block` | `allow` / `deny` | **RESOLVED — docs are right** |
-| `HostAddType` | `2` = group, `3` = multiple domains | `1` | unresolved |
-| `IpAddType` | `2` = group, `3` = manual, `4` = geographic | `1` / `2` | unresolved |
+| Field | Value | Evidence |
+|---|---|---|
+| `AclType` | `Block` or `Allow` — capitalised string | Go SDK enum constants; the API rejects `block` / `deny` |
+| `HostAddType` | `3` = a list of domains, sent in `HostList` | official Terraform docs: "HostList — required if HostAddType = 3" |
+| `IpAddType` | `2` = IP groups in `IpGroupId`; `3` = IPs in `IpList` | official Terraform docs: "required if IpAddType = 2" / "= 3" |
+| `Enable` | integer `1` | Go SDK model: `int32` |
 
-**`AclType` is settled: capitalised `Allow` / `Block`, as a string.** This is
-testable without any existing rule, because `ListAclRule` *requires* `AclType`
-as a parameter and validates it:
+HelloBP v1 used `allow` / `deny` and `1` for both add types — all wrong.
+`Name`, `AclType`, `Enable`, `HostAddType`, `IpAddType` and `Url` are required;
+the official example uses `"Url": "/"`.
+
+`AclType` can also be checked on any account, because `ListAclRule` validates
+it:
 
 ```bash
 bpctl call waf ListAclRule -p AclType=Block   # 200 OK
 bpctl call waf ListAclRule -p AclType=block   # 400 InvalidParameter. AclType
-bpctl call waf ListAclRule -p AclType=1       # 400 ... Type error
 ```
 
-Lowercase is rejected outright, so **v1's `allow` / `deny` cannot ever have
-worked** — anything in v1 that sent them was failing, whatever the surrounding
-code reported. Integers are rejected with a type error, confirming a string enum.
-
-The other two remain unresolved: they can only be read back off an existing
-rule, and `ListAclRule` returns an empty set on an account with none. The API's
-own response is the authority. Create one rule by hand in the console and
-re-probe — guessing here produces rules that appear to succeed but match nothing.
+**`ListAclRule` returns rules under `Result.Rules`**, not `Result.Data`.
 
 **`AccurateGroup` is a real expression engine**, not a formality. It supports 16
 match objects, 30 operators (regex, IP-group membership, ASN, geographic, IP

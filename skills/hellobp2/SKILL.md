@@ -169,22 +169,34 @@ These are load-bearing. Read [references/gotchas.md](references/gotchas.md)
 before writing any config payload.
 
 - **CDN delivery config lives in *policies*, not on the domain.** Create a
-  service template → release it → attach domains. A released policy is
-  immutable: to change it, `DuplicateTemplate`, edit, release, re-attach.
+  service template → lock it → attach domains. A locked policy is immutable: to
+  change it, `DuplicateTemplate`, edit, lock, re-attach.
 - **List actions stop at 10 rows without saying so.** Use `--all`, or check
   `len(Data)` against `Result.Total`, before calling any list complete.
-- **Authenticating against WAF does not mean the account has WAF.** An account
-  with no WAF deployment still probes as `authenticated`. Check with
-  `bpctl call waf ListDomain` — `"Data": null` means no domains are onboarded and
-  `CreateAclRule` cannot succeed. Say WAF is not enabled and stop; do not retry
-  or guess enum values.
-- **Access rules must omit `Switch`.** Including it on `IpAccessRule`,
-  `UaAccessRule`, or `RefererAccessRule` returns a misleading
-  `InvalidParameter.IpAccessRule.RuleType`. Set only `FilterType`
-  (`blacklist`/`whitelist`) and `Filters`.
-- **Omit `OriginHost` entirely** to get "Same as Domain Name". Sending `""` is
-  not the same thing.
+- **Access rules need `Switch`, `RuleType` and a list.**
+  `IpAccessRule: {"Switch": true, "RuleType": "deny", "Ip": [...]}` — likewise
+  `UserAgent` for `UaAccessRule` and `Referers` for `RefererAccessRule`.
+  `RuleType` is `deny` or `allow`; `blacklist` / `whitelist` are rejected. There
+  is no `FilterType` or `Filters` field — a payload using them is accepted and
+  applies **nothing**.
+- **Encryption policy settings nest inside `HTTPS`.** `HTTPS.HTTP2` and
+  `HTTPS.OCSP` are booleans, `HTTPS.TlsVersion` is lowercase (`tlsv1.2`), and
+  force-HTTPS is `HTTPS.ForcedRedirect`. `HttpForcedRedirect` does the opposite —
+  it redirects HTTPS to HTTP.
 - **HTTP/2 must be off when WebSocket is on** — they are incompatible.
+- **`AddTemplateDomain` takes one `Domain`; `UpdateTemplateDomain` takes a
+  `Domains` array.** Bind `CipherTemplateId` together with `CertId` and
+  `HTTPSSwitch: "on"`.
+- **Redirects are `RedirectionRewrite`, exact paths only.** There is no
+  `UrlRedirect` field. Wildcard or prefix redirects need the Rules Engine.
+- **Leave out `OriginHost`** to use the domain name as the origin Host header.
+  `""` does the same; any other value fixes the origin hostname.
+- **WAF `ListDomain` needs `Page`, `PageSize` and `Region`.** Without them it can
+  return `"Data": null` whatever the account has. With them, no domains means no
+  WAF in that region: say so and stop — don't retry or guess enum values.
+- **WAF `CreateAclRule`:** `AclType` is `Block` or `Allow`; `Enable` is the
+  integer `1`; `HostAddType: 3` sends `HostList`; `IpAddType: 2` sends
+  `IpGroupId`, `3` sends `IpList`.
 - **The Certificate Service has no list endpoint.** Every `CertificateList*`
   name returns 404. Enumerate certs via the *CDN* service's `ListCdnCertInfo`.
 - **`BatchDeployCert` takes `Domain` as a comma-joined string**, not an array,

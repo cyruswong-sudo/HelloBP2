@@ -278,9 +278,9 @@ Disputed facts
 
 Every call it makes is a List/Describe/Get. Nothing is created or modified.
 
-> **`AclType` resolves on any account.** `HostAddType` and `IpAddType` can only be
-> read off an existing WAF ACL rule, so on an account with none they stay
-> unresolved — create one throwaway rule in the console and re-run to settle them.
+> **The WAF enums are settled.** The probe confirms `AclType` on any account;
+> `HostAddType` and `IpAddType` come from BytePlus's official Terraform
+> documentation, and the probe re-reads them whenever an ACL rule exists.
 
 **Share this output with the team.** Those resolutions are what the WAF half of
 the migration depends on.
@@ -479,11 +479,14 @@ Payload options for `call`:
   stage 2 coverage report before anything is created.
 - **No action catalogs yet.** `bpctl call` reaches everything regardless; you
   just need the action name from the BytePlus docs.
-- **Two WAF enum values are unverified** — `HostAddType` and `IpAddType`. They
-  can only be read off an existing ACL rule; until then the documented values
-  are used and flagged. `AclType` is settled (`Block` / `Allow`). An account
-  without WAF enabled can't create ACL rules at all — `bpctl call waf ListDomain`
-  shows `"Data": null`.
+- **Payloads are checked against official models, not yet against a live
+  write.** Every payload in the playbooks matches BytePlus's SDK models, but no
+  create call has run against a real account yet. Treat the first live migration
+  as the final check, and report any rejected field exactly.
+- **WAF needs to be enabled on the account.** Check with
+  `bpctl call waf ListDomain -p Page=1 -p PageSize=100 -p Region=<waf region>` —
+  all three parameters are required. No onboarded domains means no ACL rules can
+  be created.
 - **BytePlus DNS does not support** `HTTPS`, `SVCB`, `DS`, `DNSKEY`, `TLSA`,
   `SSHFP`, `LOC`, `NAPTR`, `CERT`, `URI` or `SMIMEA` records. `HTTPS`/`SVCB`
   matters most — dropping one silently disables ECH and ALPN hints. Raise it

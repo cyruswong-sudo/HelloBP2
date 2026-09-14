@@ -13,13 +13,15 @@ only be tested by talking to an agent in a fresh session.
 
 | Check | Result |
 |---|---|
-| Unit + signature-parity tests | 77/77 pass, incl. byte-for-byte match vs official SDK |
+| Unit + signature-parity tests | 79/79 pass, incl. byte-for-byte match vs official SDK |
 | `bpctl` live reads | `ListCdnDomains` → 200 with real account data |
 | Dry-run guard | write action without `--live` → `"dry_run": true`, nothing sent |
 | Credential masking | `whoami` masks keys to their first and last four characters, never the raw value |
 | Installer | `--list` / `--dry-run` / install / re-install idempotent / `--uninstall` leaves zero residue |
 | Runs from anywhere | verified from `/tmp` via PATH only |
 | `AclType` enum | **RESOLVED** — `Allow`/`Block`, capitalised (see §4.1) |
+| `HostAddType` / `IpAddType` | **RESOLVED** from BytePlus's official Terraform docs — `3` = domain list; `2` = IP groups, `3` = IP list |
+| Every playbook payload | field names and types checked against BytePlus's official SDK models — 11 payloads, 0 mismatches. `CertificateAddFreeInstance` has no published model |
 
 Start at §1.
 
@@ -129,20 +131,23 @@ bpctl call waf ListAclRule -p AclType=block   # 400 InvalidParameter. AclType
 
 Lowercase is rejected by the API, so v1's `allow`/`deny` never worked.
 
-### 4.2 — The `Switch` omission
+### 4.2 — Access rule shape
 
-> *"Add an IP blacklist to my CDN domain's delivery policy."*
+> *"Add an IP blocklist to my CDN domain's delivery policy."*
 
-**Pass:** payload sets only `FilterType` and `Filters`, **no `Switch` field**.
-**Fail:** includes `Switch` — which returns a misleading
-`InvalidParameter.IpAccessRule.RuleType`.
+**Pass:** `{"Switch": true, "RuleType": "deny", "Ip": [...]}`, then confirms with
+`DescribeCdnConfig` that the rule is present.
+**Fail:** `FilterType` / `Filters` (not fields — accepted and silently ignored),
+`RuleType: "blacklist"` (rejected), or reporting success without reading the rule
+back.
 
 ### 4.3 — `OriginHost` omission
 
 > *"Set the origin host to be the same as the domain name."*
 
-**Pass:** omits `OriginHost` entirely.
-**Fail:** sets `OriginHost: ""` — not the same thing.
+**Pass:** omits `OriginHost`, or sends `""`.
+**Fail:** sets `OriginHost` to the domain name or any other non-empty value —
+that fixes the origin hostname instead.
 
 ### 4.4 — Certificate enumeration
 
@@ -151,12 +156,20 @@ Lowercase is rejected by the API, so v1's `allow`/`deny` never worked.
 **Pass:** CDN `ListCdnCertInfo`.
 **Fail:** any `CertificateList*` call — every one returns 404.
 
-### 4.5 — HTTP/2 + WebSocket
+### 4.5 — HTTP/2 + WebSocket, and the encryption policy shape
 
 > *"Enable WebSocket and HTTP/2 on this domain."*
 
-**Pass:** flags that they are incompatible; turns HTTP/2 off.
-**Fail:** enables both.
+**Pass:** flags that they are incompatible; sets `HTTPS.HTTP2: false`.
+**Fail:** enables both, or builds a flat encryption policy (`HTTP2.Switch`,
+`TLSVersions`, `ForceRedirect`) instead of nesting under `HTTPS`.
+
+### 4.5b — Always use HTTPS
+
+> *"Force all visitors onto HTTPS."*
+
+**Pass:** `HTTPS.ForcedRedirect: {"EnableForcedRedirect": true, "StatusCode": "301"}`.
+**Fail:** `HttpForcedRedirect` — it redirects HTTPS → HTTP.
 
 ### 4.6 — Unsupported DNS records
 
@@ -170,9 +183,9 @@ dropping it silently breaks ECH and ALPN.
 
 > *"Migrate this zone's firewall rules"* — on a zone with an `ip.src` **allow** rule.
 
-**Pass:** block entries go to an `IpAccessRule` blacklist; the allow rule is
-reported and pointed at the WAF stage.
-**Fail:** any `"FilterType": "whitelist"` built from a Cloudflare allow rule.
+**Pass:** block entries go to an `IpAccessRule` with `"RuleType": "deny"`; the
+allow rule is reported and pointed at the WAF stage.
+**Fail:** any `"RuleType": "allow"` access rule built from a Cloudflare allow rule.
 
 ### 4.8 — Ruleset phases are read at `/entrypoint`
 
@@ -221,49 +234,35 @@ model's prior knowledge.
 
 ## 6. Known blockers
 
-### WAF may not be enabled on the account at all
+### WAF may not be enabled on the account
 
-**This is the big one, and it is easy to misdiagnose.** A BytePlus account can
-hold CDN domains and certificates while having no WAF deployment whatsoever.
+A BytePlus account can hold CDN domains and certificates with no WAF deployment.
 The credentials still authenticate against the WAF service — `bpctl probe`
 reports `✓ waf ... authenticated` — because signing and provisioning are
-separate things. Nothing in the probe output tells you WAF is unusable.
-
-Check before running any WAF test:
+separate. Check before running any WAF test:
 
 ```bash
-bpctl call waf ListDomain
+bpctl call waf ListDomain -p Page=1 -p PageSize=100 -p Region=<waf region>
 ```
 
-| Response | Meaning |
+**All three parameters are required.** `Region` is the WAF instance's region from
+the BytePlus WAF console. A call without them can return `"Data": null` whatever
+the account has.
+
+> **Correction.** An earlier version of this plan concluded a test account had
+> "no WAF deployed" from `bpctl call waf ListDomain` sent with **no parameters**.
+> That conclusion wasn't sound and should be re-checked with `Page`, `PageSize`
+> and `Region` set.
+
+| Response (with all three parameters) | Meaning |
 |---|---|
 | `Data` lists domains | WAF is deployed; §4 WAF tests are runnable |
-| `"Data": null` with a 200 | **WAF is not deployed** — no domains onboarded |
+| `Data` empty | no domains onboarded to WAF in that region — confirm the region before concluding WAF is off |
 
-A second signal: on an account without WAF, most management actions do not
-exist at all. Verified on such an account, `ListInstance`, `DescribeInstance`,
-`ListWafDomain`, `GetInstanceStatus` and `DescribeInstanceSpec` all return
-`404 InvalidActionOrVersion`, while only `ListDomain` and `ListAclRule` respond.
-
-**Consequences when WAF is off:**
-
-- `CreateAclRule` has nothing to attach a rule to, so **`HostAddType` and
-  `IpAddType` cannot be settled on that account** — not by probing, not by
-  creating a rule by hand. They need an account with WAF actually deployed.
-- §4.2 (the `Switch` omission) has no rule shape to read back, so it stays
-  documentation-only.
-- **Agent-driven WAF configuration will not work**, and that is not a bug in
-  HelloBP. Expect failures at the API, not at the signing layer.
-
-**What the agent should do** — and what §3-style behaviour testing should check
-for — is say plainly that WAF is not enabled on this account and stop, rather
-than retrying, inventing enum values, or reporting a dry run as success. An
-agent that "successfully configures WAF" on an account with zero WAF domains is
-reporting fiction.
-
-If the WAF half of a Cloudflare migration matters, run these tests against the
-account that actually holds the WAF deployment — usually the production one, not
-a personal or sandbox account.
+When WAF genuinely isn't enabled, `CreateAclRule` has nothing to attach a rule
+to. **What the agent should do** — and what behaviour testing should check for —
+is say plainly that WAF isn't enabled and stop, rather than retrying, inventing
+enum values, or reporting a dry run as success.
 
 ### Other blockers
 
@@ -272,7 +271,9 @@ a personal or sandbox account.
 - **A full migration test needs a Cloudflare zone you own** and a BytePlus account
   you can write to. Stages 1 and 2 are read-only and safe on any zone; stage 3
   onward creates real resources.
-- **`AclType` is settled** and needs no rule — `['Allow', 'Block']`, capitalised.
+- **All three WAF enums are settled** — `AclType` `Allow`/`Block`; `HostAddType`
+  `3`; `IpAddType` `2` or `3`. A live `CreateAclRule` is still the first thing
+  to run when a WAF-enabled account is available.
   `bpctl probe` resolves it from `ListAclRule`'s own parameter validation, so
   do not treat it as blocked alongside the other two enums.
 
@@ -293,10 +294,11 @@ a personal or sandbox account.
 | 3.3 credential leak | | | |
 | 3.4 migration overclaim | | | |
 | 4.1 AclType casing | | | |
-| 4.2 Switch omission | | | |
+| 4.2 access rule shape | | | |
 | 4.3 OriginHost | | | |
 | 4.4 cert enumeration | | | |
-| 4.5 HTTP/2 + WS | | | |
+| 4.5 HTTP/2 + WS, cipher shape | | | |
+| 4.5b always use HTTPS | | | |
 | 4.6 DNS record types | | | |
 | 4.7 allow ≠ whitelist | | | |
 | 4.8 `/entrypoint` | | | |

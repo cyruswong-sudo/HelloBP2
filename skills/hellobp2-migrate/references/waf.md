@@ -5,12 +5,20 @@ Move Cloudflare IP rules to BytePlus. This stage also stands on its own.
 ## 1. Check WAF exists on the account
 
 ```bash
-bpctl call waf ListDomain -p PageNum=1 -p PageSize=100
+bpctl call waf ListDomain -p Page=1 -p PageSize=100 -p Region=<waf region>
 ```
 
-**`"Data": null` means WAF is not enabled** — there's nothing to attach a rule
-to, and every `CreateAclRule` will fail however correct the payload is.
-Authenticating against WAF does not mean the account has it.
+`Page`, `PageSize` and **`Region` are all required** — note `Page`, not
+`PageNum`. `Region` is the region of the account's WAF instance, as shown in the
+BytePlus WAF console; ask the user if you don't know it. A call missing any of
+these can come back as a 200 with `"Data": null`, which says nothing about
+whether WAF is enabled.
+
+With all three parameters set, an empty `Data` means **no domains are onboarded
+to WAF in that region** — there's nothing to attach a rule to, and every
+`CreateAclRule` will fail however correct the payload is. Authenticating against
+WAF does not mean the account has it. Before concluding WAF isn't enabled,
+confirm the region with the user.
 
 When WAF isn't enabled: **say so and stop the WAF strategy.** Don't retry with
 different payloads, don't guess enum values, and never present a dry run as a
@@ -33,7 +41,7 @@ user to enable WAF and onboard the domains.
 | Condition | Result |
 |---|---|
 | target `ip`, `ip_range` or `ip6`, mode `block` | **Block** |
-| target `ip`, `ip_range` or `ip6`, mode `whitelist` | **Allow** |
+| target `ip`, `ip_range` or `ip6`, mode `whitelist` (Cloudflare's name for allow) | **Allow** |
 | mode `challenge`, `js_challenge`, `managed_challenge` | skip — no WAF ACL equivalent |
 | target `country` or `asn` | skip — needs a geo or ASN rule, not an IP list |
 
@@ -83,7 +91,7 @@ bpctl call waf CreateAclRule --body '{
   "Name": "cf-migration-block",
   "AclType": "Block",
   "Enable": 1,
-  "Url": "*",
+  "Url": "/",
   "HostAddType": 3,
   "HostList": ["example.com", "www.example.com"],
   "IpAddType": 2,
@@ -95,14 +103,20 @@ bpctl call waf CreateAclRule --body '{
 - **`AclType` is capitalised: `Block` or `Allow`.** The API rejects lowercase,
   so HelloBP v1's `deny` / `allow` never worked.
 - **`Enable` is the integer `1`**, not `true`. `IpGroupId` holds integers.
-- **`HostAddType` and `IpAddType` are not yet confirmed against a real rule.**
-  The documented values are `HostAddType` 3 = multiple domain names and
-  `IpAddType` 2 = IP group (3 = manual list). v1 used 1 and 1/2. If
-  `~/.byteplus/verified.json` has them under `waf_parameters.observed` —
-  written by `bpctl probe --save` on an account with an existing rule — use
-  those. Otherwise use the documented values and **tell the user they're
-  unverified**. If the API rejects them, report the error rather than cycling
-  through other numbers.
+- **`HostAddType` and `IpAddType` are settled** by BytePlus's official Terraform
+  provider documentation:
+
+  | Field | Value | Then send |
+  |---|---|---|
+  | `HostAddType` | `3` — a list of domain names | `HostList` |
+  | `IpAddType` | `2` — IP groups | `IpGroupId` (integers) |
+  | `IpAddType` | `3` — a manual IP list | `IpList` |
+
+  HelloBP v1 used `1` for both, which was wrong. If the API still rejects these,
+  report the error — don't cycle through other numbers.
+- **`Url`** is the path the rule matches. BytePlus's official example uses `"/"`.
+  `Name`, `AclType`, `Enable`, `HostAddType`, `IpAddType` and `Url` are all
+  required.
 
 Pause about 0.3 seconds between live calls.
 
@@ -114,16 +128,22 @@ call — a second call replaces the first:
 ```bash
 bpctl call cdn UpdateCdnConfig --body '{
   "Domain": "www.example.com",
-  "IpAccessRule": {"FilterType": "blacklist", "Filters": ["192.0.2.1/32", "198.51.100.0/24"]}
+  "IpAccessRule": {"Switch": true, "RuleType": "deny", "Ip": ["192.0.2.1/32", "198.51.100.0/24"]}
 }'
 ```
 
-- **No `Switch` field.** HelloBP v1's CDN fallback sent one, which the API
-  rejects.
-- **Never `"FilterType": "whitelist"` from Cloudflare allow rules.** A
-  Cloudflare allow rule skips other checks for those visitors; a CDN whitelist
-  blocks everyone else. Report allow entries as not applied and point to the
-  WAF strategy.
+- **`Switch`, `RuleType` and `Ip` are all required.** `RuleType` is `deny` or
+  `allow` — not `blacklist` / `whitelist`, which the API rejects. There is no
+  `FilterType` or `Filters` field: HelloBP v1 sent those, the API accepted the
+  request, and **no rule was applied**.
+- **Never `"RuleType": "allow"` from Cloudflare allow rules.** A Cloudflare allow
+  rule skips other checks for those visitors; a CDN `allow` list blocks everyone
+  else. Report allow entries as not applied and point to the WAF strategy.
+- **A domain on a delivery policy** (its `ServiceTemplateId` is set in
+  `ListCdnDomains`) takes its configuration from that policy, so
+  `UpdateCdnConfig` may be rejected. In that case the rule has to go into the
+  policy: `DuplicateTemplate`, add the `IpAccessRule` block, lock the copy, and
+  move the domain onto it with `UpdateTemplateDomain`.
 - Above roughly 500 entries, warn that BytePlus may cap the list size and try
   one domain first.
 
@@ -132,7 +152,12 @@ bpctl call cdn UpdateCdnConfig --body '{
 ```bash
 bpctl call waf ListAclRule -p AclType=Block
 bpctl call waf ListAclRule -p AclType=Allow
+bpctl call cdn DescribeCdnConfig -p Domain=www.example.com     # CDN strategy
 ```
+
+ACL rules come back under **`Result.Rules`**. For the CDN strategy, the domain's
+config must show `IpAccessRule.Switch: true` with your `Ip` list — if it doesn't,
+the rule was silently ignored.
 
 Report what was created — groups, rules, the domains they cover — and every
 rule that was skipped, with its reason.

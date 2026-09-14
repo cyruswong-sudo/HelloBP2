@@ -106,7 +106,35 @@ pending rather than looping forever.
 ## 7. Deploy
 
 Deploy only to domains the certificate covers and that aren't already bound to
-it. Batch at 50:
+it. Which call depends on how the domain is managed.
+
+### Domains on a delivery policy — including every migrated domain
+
+Bind the certificate, the encryption policy and HTTPS in one call. Domains that
+share a delivery policy, encryption policy and certificate can go together:
+
+```bash
+bpctl call cdn UpdateTemplateDomain --body '{
+  "Domains": ["www.example.com", "api.example.com"],
+  "ServiceTemplateId": "<policy id>",
+  "CipherTemplateId": "<cipher id>",
+  "CertId": "<cert_id>",
+  "HTTPSSwitch": "on",
+  "ServiceRegion": "outside_chinese_mainland"
+}'
+```
+
+- **`Domains` is an array**, and plural. `AddTemplateDomain` takes a single
+  `Domain` string; `UpdateTemplateDomain` does not.
+- Send `ServiceTemplateId` and `ServiceRegion` with the domain's current values
+  — read them from `bpctl call cdn ListCdnDomains --all` rather than assuming.
+- This is where the encryption policy from stage 3 gets bound. A migrated domain
+  without this call serves plain HTTP with no TLS settings at all.
+
+### Domains that only need a certificate
+
+For a domain that already has HTTPS on and just needs a new or renewed
+certificate, deploy in batches of up to 50:
 
 ```bash
 bpctl call cdn BatchDeployCert --body '{
@@ -115,32 +143,23 @@ bpctl call cdn BatchDeployCert --body '{
 }'
 ```
 
-Per-domain results may come back in `Result.DeployResult` (or `DomainResults`,
-`Results`): a `Status` or `Code` of `0` / `"success"` is success; anything else
-carries a message. When there's no per-domain breakdown, the call succeeded for
-the whole batch.
+`Domain` here **is** a comma-joined string, not an array. Per-domain results may
+come back in `Result.DeployResult` (or `DomainResults`, `Results`): a `Status` or
+`Code` of `0` / `"success"` is success; anything else carries a message. When
+there's no per-domain breakdown, the call succeeded for the whole batch.
 
-Then confirm from the account, not from the deploy response:
+### Confirm
+
+From the account, not from the deploy response:
 
 ```bash
 bpctl call cdn ListCdnCertInfo -p CertId=<cert_id>
+bpctl call cdn DescribeCdnConfig -p Domain=www.example.com
 ```
 
-### If a domain still serves HTTP
-
-Domains added with `HTTPSSwitch: "off"` may need HTTPS switched on explicitly
-with the certificate:
-
-```bash
-bpctl call cdn UpdateTemplateDomain --body '{
-  "Domain": "www.example.com",
-  "ServiceTemplateId": "<policy id>",
-  "CipherTemplateId": "<cipher id>",
-  "CertId": "<cert_id>",
-  "HTTPSSwitch": "on",
-  "ServiceRegion": "outside_chinese_mainland"
-}'
-```
+`ConfiguredDomain` should list every domain you deployed to, and each domain's
+config should show `HTTPS.Switch: true` with the TLS settings from the encryption
+policy.
 
 ## Renewal
 

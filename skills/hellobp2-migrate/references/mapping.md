@@ -38,18 +38,21 @@ true.
 
 ### Encryption policy — one per zone
 
+All TLS settings sit inside one `HTTPS` object. Full payload in `execute.md`.
+
 | Cloudflare | BytePlus `CreateCipherTemplate` |
 |---|---|
-| (always) | `TLSVersions: ["TLSv1.1","TLSv1.2","TLSv1.3"]` — deliberately wide |
-| `websockets` on | `HTTP2.Switch: "off"` — WebSocket needs an HTTP/1.1 Upgrade |
-| `websockets` off | `HTTP2.Switch: "on"` |
-| `http3` | `HTTP3.Switch: "on"` / `"off"` |
-| `always_use_https` on | `ForceRedirect: {"Switch": "on", "RedirectType": "http"}` |
-| `security_header.strict_transport_security.enabled` | `HSTS: {"Switch": "on", "Age": max_age}`, plus `IncludeSubDomain: "on"` / `Preload: "on"` when set |
-| (always) | `OCSPStapling.Switch: "on"` |
+| (always) | `HTTPS.TlsVersion: ["tlsv1.1","tlsv1.2","tlsv1.3"]` — lowercase, deliberately wide |
+| `websockets` on | `HTTPS.HTTP2: false` — WebSocket needs an HTTP/1.1 Upgrade |
+| `websockets` off | `HTTPS.HTTP2: true` |
+| `http3` on | `Quic: {"Switch": true}` |
+| `always_use_https` on | `HTTPS.ForcedRedirect: {"EnableForcedRedirect": true, "StatusCode": "301"}` |
+| `security_header.strict_transport_security.enabled` | `HTTPS.Hsts: {"Switch": true, "Ttl": max_age, "Subdomain": "include" or "exclude"}` |
+| (always) | `HTTPS.OCSP: true` |
 
-TLS, HTTP/2, HTTP/3, HSTS and force-redirect belong **only** in the encryption
-policy — never in the delivery policy.
+TLS, HTTP/2, HTTP/3, HSTS and forced redirect belong **only** in the encryption
+policy — never in the delivery policy. **Don't use `HttpForcedRedirect`** for
+"Always Use HTTPS": it redirects HTTPS → HTTP.
 
 ### Delivery policy — one per origin group
 
@@ -57,10 +60,10 @@ policy — never in the delivery policy.
 |---|---|
 | record content | `Origin[0].OriginAction.OriginLines[0].Address`, `InstanceType`, `OriginType: "primary"`, `HttpPort: "80"`, `HttpsPort: "443"`, `Weight: "100"` |
 | `ssl` mode `full` / `strict` | `OriginProtocol: "https"`, otherwise `"http"` |
-| (always) | **omit `OriginHost`** — absent means "Same as Domain Name" |
+| (always) | leave out `OriginHost` — the origin Host header is then the domain name |
 | `ipv6` | `IPv6: {"Switch": true/false}` — a boolean, not a string |
 | `websockets` | `Websocket: {"Switch": true/false}` |
-| `brotli` on | `Compression` with `CompressionType: ["gzip","br"]`, `CompressionFormat: "default"`, `CompressionTarget: "*"` |
+| `brotli` on | `Compression: {"Switch": true, "CompressionRules": [{"CompressionAction": {"CompressionType": ["gzip","br"], "CompressionFormat": "default", "CompressionTarget": "*"}}]}` |
 
 ### Header transforms
 
@@ -84,28 +87,42 @@ Sources:
   `action_parameters.from_value.target_url.value`, code
   `from_value.status_code`, default 301
 
-Take the path from the source (the part from the first `/`):
+BytePlus's `RedirectionRewrite` matches an **exact path only** — no wildcards,
+no prefixes, no operators. Split redirects by their source:
 
-| Path | Operator | Value |
-|---|---|---|
-| ends in `*` | `match_prefix` | path with the trailing `*` removed |
-| contains `*` elsewhere | `match_regex` | `*` replaced with `.*` |
-| no `*` | `equal` | path |
+| Source path | Treatment |
+|---|---|
+| no `*`, e.g. `example.com/old-page` | **auto** — a `RedirectionRewrite` rule |
+| contains `*`, e.g. `example.com/old/*` | **manual** — Rules Engine `redirect_request` (see `rule-engine.md` in the `hellobp2` skill) |
+| dynamic redirect with an `expression` target (`target_url.expression`) | **manual** — Rules Engine |
+
+For an auto redirect, split the target URL into protocol, host and path:
 
 ```json
-{"Condition": {"ConditionRule": [{"Object": "path", "Operator": "match_prefix", "Type": "url", "Value": "/old/"}]},
- "RedirectAction": {"RedirectType": "301", "RedirectUrl": "https://example.com/new/"}}
+{"RedirectionAction": {"RedirectCode": "301", "SourcePath": "/old-page",
+  "TargetProtocol": "https", "TargetHost": "example.com", "TargetPath": "/new-page",
+  "TargetQueryComponents": {"Action": "include", "Value": "*"}}}
 ```
 
-Review complex wildcard patterns with the user — they rarely translate exactly.
+Collected into `RedirectionRewrite: {"Switch": true, "RedirectionRule": [ … ]}`.
+`RedirectCode` is a string. Use `"TargetProtocol": "followclient"` when the
+Cloudflare target has no scheme. Include `TargetQueryComponents` only when the
+Cloudflare rule preserves the query string (`preserve_query_string: true`).
 
 ### URI rewrites
 
 `http_request_transform` rules with `action == "rewrite"` and
-`action_parameters.uri.path`. Condition from the rule expression: `eq` →
-`equal`, `contains` → `match_prefix`, no expression → `match_prefix` on `/`.
-`PathAction` is `regex_replace` when the path type is `expression`, otherwise
-`replace`.
+`action_parameters.uri.path`:
+
+| Cloudflare path rewrite | BytePlus `OriginRewriteAction` |
+|---|---|
+| `type: static`, a fixed new path, rule expression `http.request.uri.path eq "/a"` | `RewriteType: "rewrite_path"`, `SourcePath: "^/a$"`, `TargetPath: "/b"` |
+| `type: static` with any other expression | **manual** — the match can't be expressed as one regex safely |
+| `type: expression` (dynamic, e.g. `regex_replace(...)`) | **manual** — Cloudflare functions don't translate to a capture-group rewrite automatically |
+
+`SourcePath` is a regular expression, so escape regex characters in the literal
+path. Collected into `OriginRewrite: {"Switch": true, "OriginRewriteRule": [{"OriginRewriteAction": {…}}]}`
+— an **object**, not a list.
 
 ### Access rules
 
@@ -124,18 +141,28 @@ Actions `block`, `challenge`, `js_challenge` and `managed_challenge` are
 
 | Bucket | BytePlus |
 |---|---|
-| deny IP / UA / Referer | `IpAccessRule` / `UaAccessRule` / `RefererAccessRule` as `{"FilterType": "blacklist", "Filters": […]}` — Referer also gets `"AllowEmpty": true` |
+| deny IP | `IpAccessRule: {"Switch": true, "RuleType": "deny", "Ip": […]}` |
+| deny User-Agent | `UaAccessRule: {"Switch": true, "RuleType": "deny", "UserAgent": […], "IgnoreCase": true}` |
+| deny Referer | `RefererAccessRule: {"Switch": true, "RuleType": "deny", "Referers": […], "AllowEmpty": false}` |
 | **allow** | **not mapped** — see below |
 | geo | **manual** — BytePlus uses its own region codes, not ISO country codes |
 
-> **Never include `Switch`** in an access rule. Its presence returns a
-> misleading `InvalidParameter.IpAccessRule.RuleType` error.
+`Switch`, `RuleType` and the list are all required. `RuleType` is `deny` or
+`allow` — **not** `blacklist` / `whitelist`, which the API rejects. And there is
+no `FilterType` or `Filters` field: a payload using them is accepted and applies
+**nothing** (that was HelloBP v1's bug).
 
-> **Never turn a Cloudflare allow rule into a whitelist.** On Cloudflare,
-> `allow` means "skip the other security checks for these visitors". On
-> BytePlus, `whitelist` means "block everyone who isn't on this list". HelloBP
-> v1 translated one into the other, which turns an allow-list into an outage.
-> Report allow rules and migrate IP allow-lists with the WAF stage instead.
+Only map an expression that is a pure match on one field. An expression that
+combines fields (`ip.src … and http.request.uri.path …`) or negates one
+(`not ip.src …`) is **manual** — as a plain list it would block far more, or the
+opposite, of what Cloudflare blocked.
+
+> **Never turn a Cloudflare allow rule into `"RuleType": "allow"`.** On
+> Cloudflare, `allow` means "skip the other security checks for these
+> visitors". On a BytePlus access rule, `allow` means "block everyone who isn't
+> on this list". Translating one into the other turns an allow-list into an
+> outage. Report allow rules and migrate IP allow-lists with the WAF stage
+> instead.
 
 ## 4. Settings that need the console
 
@@ -162,8 +189,8 @@ feature is the one failure this skill must never have.**
 
 **Auto** — the execute stage configures it:
 delivery policies (one per origin group) · the encryption policy · header
-transforms · URL redirects · URI rewrites · IP, User-Agent and Referer **block**
-rules
+transforms · exact-path URL redirects · static path rewrites · IP, User-Agent and
+Referer **block** rules
 
 **Manual** — has a BytePlus equivalent, needs a person or another stage:
 
@@ -176,6 +203,8 @@ rules
 | DNS types outside A/AAAA/CNAME/TXT/MX that BytePlus supports | recreate |
 | rate limiting (`http_ratelimit`) | WAF CC rules — `CreateCCRule` |
 | legacy firewall rules | WAF stage for pure IP lists; WAF `AccurateGroup` rules for expressions |
+| wildcard redirects, dynamic redirects, dynamic rewrites | CDN Rules Engine |
+| compound or negated firewall expressions | WAF custom rules (`AccurateGroup`) |
 | origin rules, config rules | CDN Rules Engine |
 | managed WAF rulesets | degrades to BytePlus vulnerability protection + system bots; per-rule overrides don't carry |
 | load balancers | origin weights carry; active health checks don't |
@@ -207,7 +236,7 @@ equivalent
   ],
   "cdn_domains": ["example.com", "api.example.com"],
   "dns_records": [],
-  "cipher_payload": {},
+  "cipher_payload": {"HTTPS": {}},
   "service_payloads": {"policy-example-com": {}},
   "manual_console_config": [],
   "coverage": {"auto": [], "manual": [], "unsupported": []},

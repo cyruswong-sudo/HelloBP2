@@ -236,3 +236,35 @@ def test_list_all_treats_null_data_as_empty():
 def test_call_all_refuses_write_actions(capsys):
     assert main(["call", "cdn", "AddCdnDomain", "--all"]) == 1
     assert "only applies to read actions" in capsys.readouterr().out
+
+
+# ── probe: WAF enum read-back ────────────────────────────────────────────────
+
+from bpctl import probe as probe_mod  # noqa: E402
+from bpctl.services import KNOWN_DISCREPANCIES  # noqa: E402
+
+
+def test_probe_reads_acl_rules_from_result_rules(monkeypatch):
+    """The official ListAclRule response puts rules under Result.Rules, not Result.Data."""
+
+    class R:
+        dry_run = False
+
+        def __init__(self, body):
+            self.body = body
+
+    def fake_call(self, service, action, payload, **kwargs):
+        if payload["AclType"] in ("Block", "Allow"):
+            return R({"Result": {"Rules": [{"AclType": "Block", "HostAddType": 3, "IpAddType": 2, "Enable": 1}]}})
+        raise BytePlusError("InvalidParameter", status=400, code="InvalidParameter")
+
+    monkeypatch.setattr(Client, "call", fake_call)
+    findings = probe_mod.probe_waf_parameters(Credentials("ak", "sk"), "waf.byteplusapi.com")
+    assert findings["observed"]["HostAddType"] == 3
+    assert findings["observed"]["IpAddType"] == 2
+
+
+def test_waf_add_types_are_recorded_as_resolved():
+    resolved = {d.topic: d.resolved for d in KNOWN_DISCREPANCIES}
+    assert resolved["waf.CreateAclRule.HostAddType"].startswith("3")
+    assert resolved["waf.CreateAclRule.IpAddType"].startswith("2")

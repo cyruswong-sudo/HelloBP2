@@ -76,18 +76,26 @@ them where they apply.
 
 | Rule | Why |
 |---|---|
-| Omit `OriginHost` entirely | absent means "Same as Domain Name"; `""` selects something else |
-| No `Switch` in `IpAccessRule`, `UaAccessRule` or `RefererAccessRule` | its presence returns a misleading `InvalidParameter…RuleType` |
-| Never map a Cloudflare **allow** rule to a BytePlus **whitelist** | allow skips checks; a whitelist blocks everyone else — an outage |
-| TLS, HTTP/2, HTTP/3 and HSTS go only in the encryption policy | never in the delivery policy |
+| Access rules are `{"Switch": true, "RuleType": "deny", "Ip": [...]}` | `blacklist` is rejected; `FilterType` / `Filters` don't exist and silently apply nothing |
+| Never map a Cloudflare **allow** rule to `"RuleType": "allow"` | Cloudflare allow skips checks; a BytePlus allow list blocks everyone else — an outage |
+| Encryption policy settings go inside `HTTPS` (`HTTP2` bool, lowercase `TlsVersion`, `ForcedRedirect`) | HelloBP v1's flat shape doesn't match the API |
+| "Always use HTTPS" is `HTTPS.ForcedRedirect`, never `HttpForcedRedirect` | `HttpForcedRedirect` redirects HTTPS → HTTP |
 | HTTP/2 off whenever WebSocket is on | they are incompatible |
+| Redirects use `RedirectionRewrite` with exact paths; wildcards go to the Rules Engine | there is no `UrlRedirect` field |
+| `AddTemplateDomain` — one `Domain` per call; `UpdateTemplateDomain` — a `Domains` array | the two actions differ |
+| Bind the encryption policy with the certificate (`UpdateTemplateDomain`, HTTPS on) | BytePlus binds `CipherTemplateId` together with `CertId` |
+| Publish templates with `LockTemplate` | what BytePlus's official Terraform provider does; locked templates are immutable |
 | Read ruleset phases at `…/phases/<phase>/entrypoint` | without `/entrypoint` every phase looks empty |
-| WAF `AclType` is `Block` or `Allow` | lowercase is rejected |
-| WAF `ListDomain` returns `"Data": null` → stop | WAF isn't enabled; no ACL rule can be created |
+| WAF `ListDomain` needs `Page`, `PageSize` and `Region` | without them an empty result means nothing |
+| WAF `AclType` is `Block` / `Allow`; `HostAddType: 3`; `IpAddType: 2` or `3` | lowercase and v1's `1` values are wrong |
 | Use `--all` on every list | lists stop at 10 rows without saying so |
 | `BatchDeployCert` takes `Domain` as a comma string, at most 50 | not an array |
-| Released and locked templates are immutable | a change means duplicate → edit → release → re-attach |
 | Strip the query string from Logpush destinations | it contains credentials |
+
+Every payload shape in the stage references was checked field by field against
+BytePlus's official SDK models, SDK example payloads and Terraform provider.
+The live API is still the final word — when it rejects a field, report the error
+exactly rather than improvising another shape.
 
 For signing errors, general BytePlus API gotchas and the CDN Rules Engine, see
 the `hellobp2` skill's references.
