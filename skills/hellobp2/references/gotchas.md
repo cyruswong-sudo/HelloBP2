@@ -146,6 +146,28 @@ other service, and they arrive with **HTTP 200**. A missing certificate is
 not found". Don't match on `Code` as a string, and translate the message before
 showing it to the user.
 
+**The Certificate Service reads some parameters from the query string, even on
+POST.** `CertificateDeleteInstance` with `instance_id` in the JSON body answers
+`3001: 未找到指定的证书` for an instance that `CertificateGetInstance` reads
+happily. Send it with `bpctl call ... -q instance_id=<id>` and the same call
+locates the instance. When a certificate action insists something is missing,
+move the parameter to the query string before doubting the id.
+
+**An expired certificate cannot simply be deleted.** Deletion is refused while
+anything references it, and the refusals are layered:
+
+| Attempt | Response |
+|---|---|
+| `CertificateDeleteInstance` while the cert is on a CDN domain | `3000: 不支持指定的操作` — operation not supported |
+| `cdn DeleteCdnCertificate` for the same cert | `InvalidParameter.Certificate.Deployed: … referenced by the domain configuration` |
+
+`CertificateGetInstance`'s `deploy_info` names the binding, e.g.
+`trn:CDN::<account>:Domain/www.example.com`. To remove a certificate you must
+first change the domain configuration that references it — deploy a replacement
+certificate, or turn HTTPS off — then unbind, then delete. **Deploying the
+replacement first is the right order anyway**, since it never leaves the domain
+without a certificate.
+
 **Free certificates are quota-limited, and the quota is invisible.** Every
 `CertificateAddFreeInstance` on an exhausted account fails with
 `3000: 免费证书配额不足`, whatever the plan. No quota-query action exists at

@@ -287,3 +287,22 @@ def test_numeric_error_code_does_not_crash():
         client._raise_for_error(200, {}, body, SERVICES["certificate"], "CertificateGetDcvParam", None)
     assert "3001" in str(excinfo.value)
     assert excinfo.value.code == "3001"
+
+
+def test_call_sends_query_parameters(monkeypatch):
+    """`call -q` must reach the signed query string.
+
+    The Certificate Service reads instance_id from the query string even on
+    POST: with the id in the body, CertificateDeleteInstance answers
+    "certificate not found" for an instance that plainly exists.
+    """
+    seen = {}
+
+    def fake_call(self, service, action, payload=None, **kwargs):
+        seen["query"] = kwargs.get("query")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(Client, "call", fake_call)
+    with pytest.raises(SystemExit):
+        main(["call", "certificate", "CertificateDeleteInstance", "-q", "instance_id=cert-abc"])
+    assert seen["query"] == {"instance_id": "cert-abc"}

@@ -300,6 +300,13 @@ def cmd_call(args) -> int:
             return _fail(str(exc).split("\n")[0], hint=exc.hint, status=exc.status, code=exc.code, request_id=exc.request_id)
         return _emit({"ok": True, "service": spec.key, "action": args.action, **listing})
 
+    query = {}
+    for item in getattr(args, "query", None) or []:
+        if "=" not in item:
+            return _fail(f"--query expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        query[key] = value
+
     try:
         response = client.call(
             args.service,
@@ -307,6 +314,7 @@ def cmd_call(args) -> int:
             payload,
             method=args.method,
             host=args.host,
+            query=query,
         )
     except BytePlusError as exc:
         return _fail(
@@ -430,6 +438,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="KEY=VALUE",
         help="a single payload field; repeatable. Values that look like JSON are parsed.",
+    )
+    p.add_argument(
+        "-q",
+        "--query",
+        action="append",
+        metavar="KEY=VALUE",
+        help="a query-string parameter; repeatable. The Certificate Service reads "
+             "its parameters from the query string even on POST.",
     )
     p.add_argument("--method", choices=["GET", "POST"], help="override the HTTP method")
     p.add_argument("--host", help="override the API host")
