@@ -146,6 +146,15 @@ other service, and they arrive with **HTTP 200**. A missing certificate is
 not found". Don't match on `Code` as a string, and translate the message before
 showing it to the user.
 
+**Free certificates are quota-limited, and the quota is invisible.** Every
+`CertificateAddFreeInstance` on an exhausted account fails with
+`3000: 免费证书配额不足`, whatever the plan. No quota-query action exists at
+version 2021-06-01. Report it as an account limit and stop.
+
+**`plan` is `<brand>_<standard|wildcard>_<dv|ov|ev>`** — `lets_encrypt_standard_dv`
+for one hostname, `lets_encrypt_wildcard_dv` for `*.example.com`. A wildcard
+`common_name` under a `standard` plan is rejected outright.
+
 **Free DV issuance is a three-step DNS-01 flow**: `CertificateAddFreeInstance`
 → `CertificateGetDcvParam` (returns the TXT record to publish) →
 `CertificateGetInstance` (poll; `certificate_exist: 1` means issued).

@@ -51,6 +51,18 @@ parent domain.
 
 ## 3. Request
 
+`plan` is `<brand>_<standard|wildcard>_<dv|ov|ev>`. For a free certificate the
+brand is `lets_encrypt`:
+
+| Certificate | `plan` |
+|---|---|
+| one hostname | `lets_encrypt_standard_dv` |
+| wildcard, e.g. `*.example.com` | `lets_encrypt_wildcard_dv` |
+
+Sending a wildcard `common_name` with a `standard` plan fails with
+`3000: 单域名证书实例不能申请泛域名` — "a single-domain instance cannot request a
+wildcard". Both plan values are verified live.
+
 ```bash
 bpctl call certificate CertificateAddFreeInstance --body '{
   "plan": "lets_encrypt_standard_dv",
@@ -64,6 +76,18 @@ bpctl call certificate CertificateAddFreeInstance --body '{
 ```
 
 `Result` is the certificate instance id.
+
+> **Free certificates come from a quota, and it runs out.** An account with none
+> left rejects every order — any plan, any hostname — with
+> `3000: 免费证书配额不足` ("insufficient free certificate quota"). There is no
+> quota API at version 2021-06-01: `GetQuotaDetail`, `CertificateGetQuotaDetail`
+> and `CertificateGetQuota` all return 404, so the only way to learn the quota is
+> to order and read the error. Verified live, 2026-09-18.
+>
+> When you hit it, **stop and tell the user** — this is an account limit, not a
+> payload bug, and no amount of retrying changes it. Their options are to free
+> quota in the BytePlus console, buy a certificate, or upload one they already
+> hold. Expired instances may still occupy quota.
 
 ## 4. Get the validation record
 
