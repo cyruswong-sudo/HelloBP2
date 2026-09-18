@@ -202,6 +202,14 @@ config payload.
 - **WAF `CreateAclRule`:** `AclType` is `Block` or `Allow`; `Enable` is the
   integer `1`; `HostAddType: 3` sends `HostList`; `IpAddType: 2` sends
   `IpGroupId`, `3` sends `IpList`.
+- **Never ask for a credential value, and never echo one.** If the user offers
+  a token in chat, tell them to put it in a file and name the path instead —
+  a pasted secret is in the transcript for good and has to be rotated. Read
+  credentials with `--config <file>`, confirm with `whoami` (masked), and never
+  put a secret on a command line. See `CREDENTIALS.md`.
+- **A named `--config` outranks `~/.byteplus/config`.** With several accounts
+  configured, always pass it, and check `whoami`'s bracketed source path before
+  any write — otherwise you may be writing to the wrong customer's account.
 - **The Certificate Service has no list endpoint.** Every `CertificateList*`
   name returns 404. Enumerate certs via the *CDN* service's `ListCdnCertInfo`.
 - **`BatchDeployCert` takes `Domain` as a comma-joined string**, not an array,

@@ -109,7 +109,8 @@ reaches a shell history or an agent transcript, and so writes are simulated
 until you pass `--live`.
 
 Full manual: **[GETTING-STARTED.md](GETTING-STARTED.md)**. Test plan:
-**[TESTING.md](TESTING.md)**.
+**[TESTING.md](TESTING.md)**. Working across several accounts, or handing
+credentials to an agent: **[CREDENTIALS.md](CREDENTIALS.md)**.
 
 ## Installer options
 

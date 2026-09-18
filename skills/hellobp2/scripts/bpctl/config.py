@@ -177,12 +177,25 @@ def load_credentials(
         "region": (local_file.get("region") or nested.get("region") or "").strip() or None,
     }
 
-    layers = [
-        ("argument", explicit),
-        ("env", env),
-        (str(SDK_CONFIG_PATH), from_sdk),
-        (str(local_path), from_local),
-    ]
+    # A config file the caller *named* outranks the ambient ones. Anything else
+    # silently runs against whichever account ~/.byteplus/config happens to hold
+    # — and with several customers' keys around, that deploys to the wrong
+    # account while looking like it obeyed you. An unnamed ./bpctl.json stays
+    # last, where it is a convenience rather than an instruction.
+    if config_path:
+        layers = [
+            ("argument", explicit),
+            (str(local_path), from_local),
+            ("env", env),
+            (str(SDK_CONFIG_PATH), from_sdk),
+        ]
+    else:
+        layers = [
+            ("argument", explicit),
+            ("env", env),
+            (str(SDK_CONFIG_PATH), from_sdk),
+            (str(local_path), from_local),
+        ]
 
     for field_name in ("access_key", "secret_key", "region", "session_token"):
         for origin, layer in layers:
@@ -240,12 +253,17 @@ def load_cloudflare_credentials(*, api_token: str | None = None, config_path: st
     local_file = _load_json(local_name)
     nested = local_file.get("cloudflare") if isinstance(local_file.get("cloudflare"), dict) else {}
 
-    candidates = [
-        ((api_token or "").strip() or None, "argument"),
+    named = ((nested.get("api_token") or "").strip() or None, str(local_name))
+    ambient = [
         (_first_env(_CF_TOKEN_VARS), "env"),
         ((cf_file.get("api_token") or cf_file.get("token") or "").strip() or None, str(CF_CONFIG_PATH)),
-        ((nested.get("api_token") or "").strip() or None, str(local_name)),
     ]
+    # Same rule as the BytePlus keys: a named config file wins over the ambient
+    # ones, so one file per account switches both halves together.
+    if config_path:
+        candidates = [((api_token or "").strip() or None, "argument"), named, *ambient]
+    else:
+        candidates = [((api_token or "").strip() or None, "argument"), *ambient, named]
 
     creds = CloudflareCredentials()
     for value, origin in candidates:

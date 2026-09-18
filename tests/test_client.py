@@ -306,3 +306,49 @@ def test_call_sends_query_parameters(monkeypatch):
     with pytest.raises(SystemExit):
         main(["call", "certificate", "CertificateDeleteInstance", "-q", "instance_id=cert-abc"])
     assert seen["query"] == {"instance_id": "cert-abc"}
+
+
+# ── credential precedence: a named --config must win ─────────────────────────
+
+from bpctl.config import load_credentials, load_cloudflare_credentials  # noqa: E402
+
+
+def _write(tmp_path, name, data):
+    import json as _json
+    p = tmp_path / name
+    p.write_text(_json.dumps(data), encoding="utf-8")
+    return p
+
+
+def test_named_config_outranks_global_and_env(tmp_path, monkeypatch):
+    """--config names an account; ambient credentials must not override it.
+
+    With several customers' keys on one machine, losing this means writing to
+    the wrong account while appearing to obey the flag.
+    """
+    profile = _write(tmp_path, "customer-b.json", {
+        "access_key": "AK_PROFILE", "secret_key": "SK_PROFILE", "region": "ap-southeast-1",
+        "cloudflare": {"api_token": "cf-profile-token"},
+    })
+    monkeypatch.setenv("BYTEPLUS_ACCESS_KEY", "AK_FROM_ENV")
+    monkeypatch.setenv("BYTEPLUS_SECRET_KEY", "SK_FROM_ENV")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cf-env-token")
+
+    creds = load_credentials(config_path=str(profile))
+    assert creds.access_key == "AK_PROFILE"
+    assert creds.region == "ap-southeast-1"
+    assert load_cloudflare_credentials(config_path=str(profile)).api_token == "cf-profile-token"
+
+
+def test_without_config_env_still_wins(tmp_path, monkeypatch):
+    """No --config: the environment keeps its usual precedence."""
+    monkeypatch.setenv("BYTEPLUS_ACCESS_KEY", "AK_FROM_ENV")
+    monkeypatch.setenv("BYTEPLUS_SECRET_KEY", "SK_FROM_ENV")
+    monkeypatch.chdir(tmp_path)
+    assert load_credentials().access_key == "AK_FROM_ENV"
+
+
+def test_explicit_argument_still_beats_named_config(tmp_path, monkeypatch):
+    profile = _write(tmp_path, "p.json", {"access_key": "AK_PROFILE", "secret_key": "SK_PROFILE"})
+    creds = load_credentials(access_key="AK_ARG", secret_key="SK_ARG", config_path=str(profile))
+    assert creds.access_key == "AK_ARG"
