@@ -352,3 +352,24 @@ def test_explicit_argument_still_beats_named_config(tmp_path, monkeypatch):
     profile = _write(tmp_path, "p.json", {"access_key": "AK_PROFILE", "secret_key": "SK_PROFILE"})
     creds = load_credentials(access_key="AK_ARG", secret_key="SK_ARG", config_path=str(profile))
     assert creds.access_key == "AK_ARG"
+
+
+def test_missing_credentials_lists_account_files(tmp_path, monkeypatch):
+    """The error should name the accounts on this machine, not suggest an env export.
+
+    An env export applies to every command in that shell, which is exactly how a
+    write reaches the wrong customer's account.
+    """
+    from bpctl import config as config_mod
+
+    (tmp_path / "acme.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "personal.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config_mod, "PROFILE_DIR", tmp_path)
+
+    with pytest.raises(SystemExit) as excinfo:
+        Credentials().require()
+
+    message = str(excinfo.value)
+    assert "--config" in message
+    assert "acme.json" in message and "personal.json" in message
+    assert message.index("--config") < message.index("BYTEPLUS_ACCESS_KEY")

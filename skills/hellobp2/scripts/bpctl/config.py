@@ -32,6 +32,8 @@ from .services import DEFAULT_REGION
 SDK_CONFIG_PATH = Path.home() / ".byteplus" / "config"
 CF_CONFIG_PATH = Path.home() / ".cloudflare" / "config"
 LOCAL_CONFIG_NAME = "bpctl.json"
+# Where per-account credential files live; see CREDENTIALS.md.
+PROFILE_DIR = Path.home() / ".hellobp"
 
 # The official SDK reads BYTEPLUS_ACCESSKEY / BYTEPLUS_SECRETKEY. The
 # underscored spellings are what people actually type. Accept both.
@@ -100,15 +102,30 @@ class Credentials:
             missing.append("access key")
         if not self.secret_key:
             missing.append("secret key")
+        # Lead with the per-account file: it is the shape that survives having
+        # more than one customer's keys on a machine, and an env export leaks
+        # into every process started from that shell.
+        profiles = sorted(PROFILE_DIR.glob("*.json")) if PROFILE_DIR.is_dir() else []
+        if profiles:
+            available = "\n".join(f"    --config {p}" for p in profiles)
+            found = f"Account files already on this machine:\n{available}\n\n"
+        else:
+            found = (
+                f"Create one per account under {PROFILE_DIR}/ as\n"
+                '    {"access_key": "...", "secret_key": "...", "region": "ap-southeast-1"}\n'
+                "\n"
+            )
         raise SystemExit(
             f"bpctl: missing BytePlus {' and '.join(missing)}.\n"
             "\n"
-            "Set them in the environment:\n"
-            "    export BYTEPLUS_ACCESS_KEY=...\n"
-            "    export BYTEPLUS_SECRET_KEY=...\n"
+            "Name the account you mean:\n"
+            "    bpctl <command> --config <account file>\n"
             "\n"
-            f"or write {SDK_CONFIG_PATH} as {{\"ak\": \"...\", \"sk\": \"...\"}} "
-            "(the path the official BytePlus SDK also reads)."
+            f"{found}"
+            f"Alternatives: $BYTEPLUS_ACCESS_KEY / $BYTEPLUS_SECRET_KEY, or "
+            f"{SDK_CONFIG_PATH} as {{\"ak\": \"...\", \"sk\": \"...\"}} — both apply to "
+            "every command, so with several accounts configured they are the "
+            "ones that write to the wrong customer. See CREDENTIALS.md."
         )
 
     def describe(self) -> str:
