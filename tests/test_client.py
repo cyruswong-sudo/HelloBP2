@@ -268,3 +268,22 @@ def test_waf_add_types_are_recorded_as_resolved():
     resolved = {d.topic: d.resolved for d in KNOWN_DISCREPANCIES}
     assert resolved["waf.CreateAclRule.HostAddType"].startswith("3")
     assert resolved["waf.CreateAclRule.IpAddType"].startswith("2")
+
+
+def test_numeric_error_code_does_not_crash():
+    """The Certificate Service returns a numeric Code; every other service a string.
+
+    Formatting the two together used to raise TypeError, so a plain API error
+    ("certificate not found") surfaced as a Python traceback instead of JSON.
+    """
+    client = Client(Credentials("ak", "sk"), live=True)
+    body = {
+        "ResponseMetadata": {
+            "RequestId": "req-1",
+            "Error": {"Code": 3001, "Message": "certificate not found"},
+        }
+    }
+    with pytest.raises(BytePlusError) as excinfo:
+        client._raise_for_error(200, {}, body, SERVICES["certificate"], "CertificateGetDcvParam", None)
+    assert "3001" in str(excinfo.value)
+    assert excinfo.value.code == "3001"

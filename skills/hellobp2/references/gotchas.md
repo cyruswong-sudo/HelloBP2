@@ -35,6 +35,13 @@ CreateCipherTemplate  → LockTemplate → UpdateTemplateDomain    (Domains[], C
 `ReleaseTemplate` also exists (v1 used it); fall back to it only if binding a
 locked template is refused. There is no `AddCipherDomain` action.
 
+**List templates with `DescribeTemplates`**, filtered by `Type` (`service` or
+`cipher`). There is no `ListServiceTemplate` or `ListCipherTemplate` — both
+return `404 InvalidActionOrVersion`. Results come back under `Result.Templates`
+with `Result.TotalCount`, and each carries `TemplateId`, `Title`, `Status`
+(`locked` once published) and the number of bound domains. `DescribeTemplateDomains`
+lists the domains on one template.
+
 **Locked policies are immutable.** To change one: `DuplicateTemplate`, edit the
 copy, lock it, re-attach the domains. There is no in-place edit — "change one
 cache TTL" is a four-call operation.
@@ -133,6 +140,12 @@ bpctl call cdn ListCertInfo        # fallback
 **`BatchDeployCert` takes `Domain` as a comma-joined string**, not an array, and
 caps at 50 domains per call. Batch client-side.
 
+**Certificate errors use numeric codes and Chinese messages**, unlike every
+other service, and they arrive with **HTTP 200**. A missing certificate is
+`{"Code": 3001, "Message": "未找到指定的证书"}` — "the specified certificate was
+not found". Don't match on `Code` as a string, and translate the message before
+showing it to the user.
+
 **Free DV issuance is a three-step DNS-01 flow**: `CertificateAddFreeInstance`
 → `CertificateGetDcvParam` (returns the TXT record to publish) →
 `CertificateGetInstance` (poll; `certificate_exist: 1` means issued).
@@ -148,10 +161,16 @@ bpctl call waf ListDomain -p Page=1 -p PageSize=100 -p Region=<waf region>
 ```
 
 **`Page`, `PageSize` and `Region` are all required** (`Page`, not `PageNum`).
-`Region` is the WAF instance's region from the BytePlus WAF console. A call
-missing them can return a 200 with `"Data": null` whatever the account has — an
-earlier version of this skill drew "WAF isn't enabled" from exactly that, which
-was not a sound conclusion.
+`Region` is the WAF instance's region from the BytePlus WAF console — the API
+version is `2023-12-25` and it echoes the region back in `ResponseMetadata`.
+
+> **Verified on a live account, 2026-09-18.** With all three parameters set and
+> `Region` tried as `ap-southeast-1`, `ap-singapore-1` and `singapore`,
+> `ListDomain` returned `Result.Data: null` every time, and `ListAclRule`
+> returned `TotalCount: 0`. So an account really can sign against WAF while
+> having nothing onboarded. Note the API accepts an unknown `Region` without
+> complaint, so an empty result never *proves* the region was right — confirm it
+> with the user before concluding WAF is off.
 
 With all three set, an empty `Data` means no domains are onboarded to WAF in that
 region, so `CreateAclRule` has nothing to attach to. **Say so and stop.** Confirm

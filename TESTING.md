@@ -249,10 +249,12 @@ bpctl call waf ListDomain -p Page=1 -p PageSize=100 -p Region=<waf region>
 the BytePlus WAF console. A call without them can return `"Data": null` whatever
 the account has.
 
-> **Correction.** An earlier version of this plan concluded a test account had
-> "no WAF deployed" from `bpctl call waf ListDomain` sent with **no parameters**.
-> That conclusion wasn't sound and should be re-checked with `Page`, `PageSize`
-> and `Region` set.
+> **Re-checked live on 2026-09-18.** An earlier version of this plan concluded
+> "no WAF deployed" from a `ListDomain` call sent with **no parameters**, which
+> wasn't sound reasoning. Re-run properly — all three parameters, `Region` tried
+> as `ap-southeast-1`, `ap-singapore-1` and `singapore` — the account still
+> returns `Data: null`, and `ListAclRule` returns `TotalCount: 0`. The original
+> conclusion happened to be right. **WAF tests need a different account.**
 
 | Response (with all three parameters) | Meaning |
 |---|---|

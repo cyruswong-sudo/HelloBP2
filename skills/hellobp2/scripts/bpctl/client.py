@@ -302,8 +302,15 @@ class Client:
         metadata = parsed.get("ResponseMetadata") or {}
         error = metadata.get("Error") or {}
         request_id = metadata.get("RequestId")
-        code = error.get("Code") or ""
+        # The Certificate Service returns a numeric Code, every other service a
+        # string. Normalise, or formatting the message below raises TypeError
+        # and a plain API error surfaces as a traceback.
+        code = error.get("Code")
+        code = "" if code is None or code == "" else str(code)
         message = error.get("Message") or ""
+        if not message and isinstance(parsed.get("Result"), dict):
+            # Certificate errors put the description outside ResponseMetadata.
+            message = str(parsed["Result"].get("message") or "")
 
         # BytePlus returns 200 with an embedded error often enough that
         # checking status alone silently turns failures into successes.
